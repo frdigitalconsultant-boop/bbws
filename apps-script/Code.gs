@@ -36,6 +36,28 @@ function doGet() {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
 
+/* ================= API untuk web di Vercel ================= */
+
+// Fungsi yang boleh dipanggil dari luar (web yang di-hosting di Vercel).
+const API_FNS = { getLoginNames, login, logout, getData, saveRow, uploadPhoto };
+
+/**
+ * Web di Vercel memanggil script ini lewat POST dengan body JSON: { fn: 'getData', args: [...] }.
+ * Balasan: { ok: hasil } atau { error: 'pesan' }.
+ */
+function doPost(e) {
+  let out;
+  try {
+    const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const f = API_FNS[req.fn];
+    if (!f) throw new Error('Fungsi tidak dikenal.');
+    out = { ok: f.apply(null, Array.isArray(req.args) ? req.args : []) };
+  } catch (err) {
+    out = { error: String((err && err.message) || err) };
+  }
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+
 /* ================= Login ================= */
 
 /** Daftar nama untuk layar masuk (tanpa PIN). */
