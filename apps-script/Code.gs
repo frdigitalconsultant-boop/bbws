@@ -1,29 +1,37 @@
 /**
- * Monitoring Pekerjaan OP 2 — Web App (Google Apps Script)
- * ---------------------------------------------------------
- * Dipasang di spreadsheet "Pekerjaan OP 2 Tahun 2026".
+ * Monitoring Pekerjaan OP 2 — server (Google Apps Script)
+ * --------------------------------------------------------
+ * Dipasang di spreadsheet "Database Monitoring OP 2".
+ * Tab yang dipakai: Kegiatan, Dokumen, Pengguna, Riwayat Progres, Foto, Log.
  * Langkah pertama: jalankan fungsi setup() sekali dari editor Apps Script.
  */
 
 const CONFIG = {
-  TAB_DATA: 'INPUT DATA DISINI YAAAAAA',
-  TAB_USER: 'Pengguna',
-  TAB_FOTO: 'Foto',
-  TAB_LOG: 'Log',
-  FOLDER_FOTO: 'Foto Pekerjaan OP 2',   // folder di Google Drive pemilik script
-  SESSION_HOURS: 12,                     // lama login sebelum harus masuk lagi
+  TAB: {
+    KEGIATAN: 'Kegiatan',
+    DOKUMEN: 'Dokumen',
+    PENGGUNA: 'Pengguna',
+    RIWAYAT: 'Riwayat Progres',
+    FOTO: 'Foto',
+    LOG: 'Log',
+  },
+  FOLDER_FOTO: 'Foto Pekerjaan OP 2', // folder di Google Drive pemilik script
+  SESSION_HOURS: 12,                   // lama login sebelum harus masuk lagi
   JUDUL: 'Monitoring Pekerjaan OP 2',
 };
 
-// Kolom di tab data (1 = A)
-const COL = { NO: 1, PAKET: 2, NOK: 3, KEGIATAN: 4, LOKASI: 5, KEU: 6, FISIK: 7, KENDALA: 8, PENGAWAS: 9, PERENCANA: 10,
-  GAMBAR: 11, ASBUILT: 12, MC0: 13, MC100: 14, FOTO: 15, JENIS: 16, PANJANG: 17, TINGGI: 18, VOLUME: 19, DEADLINE: 20 };
+// Kolom tab Kegiatan (1 = A)
+const K = { ID: 1, PAKET: 2, KATEGORI: 3, NAMA_PAKET: 4, NO: 5, NAMA: 6, LOKASI: 7, JENIS: 8, PANJANG: 9, TINGGI: 10, VOLUME: 11,
+  PENGAWAS: 12, PERENCANA: 13, FISIK: 14, KEU: 15, KENDALA: 16, DEADLINE: 17, DIPERBARUI: 18, OLEH: 19 };
+const K_COLS = 19;
+
+// Kolom status dokumen di tab Dokumen (A = ID Kegiatan)
 const DOCS = [
-  { key: 'gambar_rencana', label: 'Gambar rencana', col: COL.GAMBAR, role: 'PERENCANA' },
-  { key: 'as_built', label: 'As built', col: COL.ASBUILT, role: 'PENGAWAS' },
-  { key: 'mc0', label: 'MC 0', col: COL.MC0, role: 'PERENCANA' },
-  { key: 'mc100', label: 'MC 100 & laporan', col: COL.MC100, role: 'PENGAWAS' },
-  { key: 'foto', label: 'Foto', col: COL.FOTO, role: 'PENGAWAS' },
+  { key: 'gambar_rencana', label: 'Gambar rencana', col: 3, role: 'PERENCANA' },
+  { key: 'mc0', label: 'MC 0', col: 4, role: 'PERENCANA' },
+  { key: 'as_built', label: 'As built', col: 5, role: 'PENGAWAS' },
+  { key: 'mc100', label: 'MC 100 & laporan', col: 6, role: 'PENGAWAS' },
+  { key: 'foto', label: 'Foto', col: 7, role: 'PENGAWAS' },
 ];
 const ROLES = ['OPERATOR', 'PIC', 'ATASAN'];
 
@@ -96,85 +104,152 @@ function session_(token) {
 
 function getData(token) {
   const me = session_(token);
-  const sh = sheet_(CONFIG.TAB_DATA);
-  const last = Math.max(sh.getLastRow(), 2);
-  const vals = sh.getRange(1, 1, last, 20).getDisplayValues();
-  const update = String(vals[0][5] || '').trim();
-  let kategori = 'Penanganan Darurat', paket = '';
+  const kg = sheet_(CONFIG.TAB.KEGIATAN);
+  const lastK = kg.getLastRow();
+  const kv = lastK >= 2 ? kg.getRange(2, 1, lastK - 1, K_COLS).getValues() : [];
+  const docs = readDocs_();
+  let terakhir = null;
   const rows = [];
-  for (let i = 2; i < vals.length; i++) {
-    const r = vals[i];
-    const c = k => String(r[k - 1] == null ? '' : r[k - 1]).trim();
-    if (c(1) && !c(2) && !c(4) && c(1).length > 3) {
-      kategori = c(1).toLowerCase().replace(/^pekerjaan\s+/, '').replace(/\b\w/g, x => x.toUpperCase());
-      continue;
-    }
-    if (!c(COL.KEGIATAN)) continue;
-    if (c(COL.PAKET)) paket = c(COL.PAKET);
-    const docs = {};
-    DOCS.forEach(d => { const v = c(d.col).toUpperCase(); docs[d.key] = v === 'COMPLETE' ? 1 : v === 'INCOMPLETE' ? 0 : null; });
+  kv.forEach(r => {
+    const id = str_(r[K.ID - 1]);
+    if (!id || !str_(r[K.NAMA - 1])) return;
+    const dl = r[K.DEADLINE - 1];
+    const upd = r[K.DIPERBARUI - 1];
+    if (upd instanceof Date && (!terakhir || upd > terakhir)) terakhir = upd;
     rows.push({
-      row: i + 1, kategori, paket, kegiatan: c(COL.KEGIATAN), lokasi: c(COL.LOKASI),
-      keu: num_(c(COL.KEU)), fisik: num_(c(COL.FISIK)), kendala: c(COL.KENDALA),
-      pengawas: c(COL.PENGAWAS), perencana: c(COL.PERENCANA), docs,
-      jenis: c(COL.JENIS), deadline: c(COL.DEADLINE),
+      row: id,
+      kategori: str_(r[K.KATEGORI - 1]),
+      paket: str_(r[K.NAMA_PAKET - 1]),
+      kegiatan: str_(r[K.NAMA - 1]),
+      lokasi: str_(r[K.LOKASI - 1]),
+      jenis: str_(r[K.JENIS - 1]),
+      pengawas: str_(r[K.PENGAWAS - 1]),
+      perencana: str_(r[K.PERENCANA - 1]),
+      fisik: pct_(r[K.FISIK - 1]),
+      keu: pct_(r[K.KEU - 1]),
+      kendala: str_(r[K.KENDALA - 1]),
+      dl: dl instanceof Date ? iso_(dl) : null,
+      deadline: dl instanceof Date ? '' : str_(dl),
+      docs: docs[id] || DOCS.reduce((o, d) => (o[d.key] = null, o), {}),
     });
-  }
-  return { me, update, rows, foto: readFoto_(), docs: DOCS.map(d => ({ key: d.key, label: d.label, role: d.role })), at: new Date().toISOString() };
+  });
+  return {
+    me,
+    update: terakhir ? 'Update terakhir ' + Utilities.formatDate(terakhir, tz_(), 'dd MMM yyyy') : 'Data dari Google Sheets',
+    rows,
+    foto: readFoto_(),
+    docs: DOCS.map(d => ({ key: d.key, label: d.label, role: d.role })),
+    at: new Date().toISOString(),
+  };
+}
+
+function readDocs_() {
+  const sh = sheet_(CONFIG.TAB.DOKUMEN);
+  const last = sh.getLastRow();
+  const out = {};
+  if (last < 2) return out;
+  sh.getRange(2, 1, last - 1, 7).getValues().forEach(r => {
+    const id = str_(r[0]);
+    if (!id) return;
+    const o = {};
+    DOCS.forEach(d => { const v = str_(r[d.col - 1]).toLowerCase(); o[d.key] = v === 'lengkap' ? 1 : v === 'belum' ? 0 : null; });
+    out[id] = o;
+  });
+  return out;
+}
+
+function readFoto_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.TAB.FOTO);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 7).getValues()
+    .filter(r => r[4])
+    .map(r => ({ at: r[0] instanceof Date ? r[0].toISOString() : String(r[0]), row: str_(r[1]), kegiatan: str_(r[2]), ket: str_(r[3]), id: str_(r[4]), by: str_(r[6]) }))
+    .reverse();
 }
 
 /* ================= Simpan ================= */
 
 /**
- * payload: { kegiatan, fisik, keu, kendala, docs:{key:1|0|''}, deadline:'23 Nov 2026'|'On Progres', updateLabel:true }
+ * id: ID Kegiatan (mis. "K012")
+ * payload: { kegiatan, fisik, keu, kendala, docs:{key:'1'|'0'|''}, deadline:'2026-11-23'|'On Progres' }
  * Setiap peran hanya bisa mengubah kolom miliknya.
  */
-function saveRow(token, row, payload) {
+function saveRow(token, id, payload) {
   const me = session_(token);
   if (me.peran === 'ATASAN') throw new Error('Akun atasan hanya bisa melihat.');
+  payload = payload || {};
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const sh = sheet_(CONFIG.TAB_DATA);
-    row = Number(row);
-    if (!(row >= 3)) throw new Error('Baris tidak valid.');
-    const cur = sh.getRange(row, 1, 1, 20).getDisplayValues()[0];
-    const kegiatan = String(cur[COL.KEGIATAN - 1]).trim();
-    if (kegiatan !== String(payload.kegiatan || '').trim()) throw new Error('BARIS_BERUBAH');
-    const pengawas = String(cur[COL.PENGAWAS - 1]).trim(), perencana = String(cur[COL.PERENCANA - 1]).trim();
+    const kg = sheet_(CONFIG.TAB.KEGIATAN);
+    const r = findRow_(kg, id);
+    if (!r) throw new Error('Kegiatan ' + id + ' tidak ditemukan.');
+    const cur = kg.getRange(r, 1, 1, K_COLS).getValues()[0];
+    const nama = str_(cur[K.NAMA - 1]);
+    if (nama !== str_(payload.kegiatan)) throw new Error('BARIS_BERUBAH');
     const isOp = me.peran === 'OPERATOR';
-    const asPengawas = isOp || (me.peran === 'PIC' && sameName_(pengawas, me.nama));
-    const asPerencana = isOp || (me.peran === 'PIC' && sameName_(perencana, me.nama));
+    const asPengawas = isOp || (me.peran === 'PIC' && sameName_(cur[K.PENGAWAS - 1], me.nama));
+    const asPerencana = isOp || (me.peran === 'PIC' && sameName_(cur[K.PERENCANA - 1], me.nama));
     if (!asPengawas && !asPerencana) throw new Error('Kegiatan ini bukan tanggung jawab Anda.');
 
     const changes = [];
-    const setNum = (col, label, v) => {
+    let progresBerubah = false;
+    const setPct = (col, label, v) => {
       if (v === undefined) return;
-      if (v === '' || v === null) { if (String(cur[col - 1]).trim() !== '') { sh.getRange(row, col).clearContent(); changes.push(label + ' dikosongkan'); } return; }
+      const old = pct_(cur[col - 1]);
+      if (v === '' || v === null) {
+        if (old !== null) { kg.getRange(r, col).clearContent(); cur[col - 1] = ''; changes.push(label + ' dikosongkan'); progresBerubah = true; }
+        return;
+      }
       const n = Number(String(v).replace(',', '.'));
       if (!isFinite(n) || n < 0 || n > 100) throw new Error(label + ' harus angka 0 sampai 100.');
-      if (num_(cur[col - 1]) !== n) { sh.getRange(row, col).setValue(n); changes.push(label + ' ' + (cur[col - 1] || '-') + ' → ' + n); }
+      if (old === null || Math.abs(old - n) > 1e-9) {
+        kg.getRange(r, col).setValue(n / 100); cur[col - 1] = n / 100;
+        changes.push(label + ' ' + (old === null ? '-' : fmtPct_(old)) + ' → ' + fmtPct_(n)); progresBerubah = true;
+      }
     };
     const setText = (col, label, v) => {
       if (v === undefined) return;
-      v = String(v || '').trim();
-      if (String(cur[col - 1]).trim() !== v) { const rg = sh.getRange(row, col); rg.setNumberFormat('@'); rg.setValue(v); changes.push(label + ' diubah'); }
+      v = str_(v);
+      if (str_(cur[col - 1]) !== v) { kg.getRange(r, col).setValue(v); changes.push(label + ' diubah'); }
     };
 
-    if (asPengawas) { setNum(COL.FISIK, 'Fisik', payload.fisik); setText(COL.KENDALA, 'Kendala', payload.kendala); }
-    if (isOp) { setNum(COL.KEU, 'Keuangan', payload.keu); if (payload.deadline !== undefined) setText(COL.DEADLINE, 'Deadline', payload.deadline); }
-    DOCS.forEach(d => {
-      const ok = d.role === 'PENGAWAS' ? asPengawas : asPerencana;
-      if (!ok || !payload.docs || payload.docs[d.key] === undefined) return;
-      const v = payload.docs[d.key] === 1 || payload.docs[d.key] === '1' ? 'COMPLETE' : payload.docs[d.key] === 0 || payload.docs[d.key] === '0' ? 'INCOMPLETE' : '';
-      if (String(cur[d.col - 1]).trim().toUpperCase() !== v) { sh.getRange(row, d.col).setValue(v); changes.push(d.label + ' → ' + (v || 'kosong')); }
-    });
-
-    if (changes.length && payload.updateLabel !== false) {
-      const rg = sh.getRange(1, 6); rg.setNumberFormat('@');
-      rg.setValue('Update ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd') + ' ' + bulan_(new Date().getMonth()) + ' ' + new Date().getFullYear());
+    if (asPengawas) { setPct(K.FISIK, 'Fisik', payload.fisik); setText(K.KENDALA, 'Kendala', payload.kendala); }
+    if (isOp) {
+      setPct(K.KEU, 'Keuangan', payload.keu);
+      if (payload.deadline !== undefined && payload.deadline !== '') {
+        const old = cur[K.DEADLINE - 1];
+        const oldKey = old instanceof Date ? iso_(old) : str_(old);
+        const m = String(payload.deadline).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const nv = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : 'On Progres';
+        const newKey = m ? payload.deadline : 'On Progres';
+        if (oldKey !== newKey) { kg.getRange(r, K.DEADLINE).setValue(nv); changes.push('Deadline → ' + (m ? Utilities.formatDate(nv, tz_(), 'dd MMM yyyy') : 'On Progres')); }
+      }
     }
-    if (changes.length) log_(me.nama, row, kegiatan, changes.join('; '));
+
+    // Status dokumen
+    if (payload.docs) {
+      const dk = sheet_(CONFIG.TAB.DOKUMEN);
+      let dr = findRow_(dk, id);
+      if (!dr) { dk.appendRow([id]); dr = dk.getLastRow(); }
+      const dcur = dk.getRange(dr, 1, 1, 7).getValues()[0];
+      DOCS.forEach(d => {
+        const ok = d.role === 'PENGAWAS' ? asPengawas : asPerencana;
+        const v = payload.docs[d.key];
+        if (!ok || v === undefined) return;
+        const nv = String(v) === '1' ? 'Lengkap' : String(v) === '0' ? 'Belum' : '';
+        if (str_(dcur[d.col - 1]) !== nv) { dk.getRange(dr, d.col).setValue(nv); changes.push(d.label + ' → ' + (nv || 'kosong')); }
+      });
+    }
+
+    if (changes.length) {
+      const now = new Date();
+      kg.getRange(r, K.DIPERBARUI, 1, 2).setValues([[now, me.nama]]);
+      if (progresBerubah) {
+        sheet_(CONFIG.TAB.RIWAYAT).appendRow([now, id, nama, cur[K.FISIK - 1], cur[K.KEU - 1], me.nama, 'Diperbarui lewat aplikasi']);
+      }
+      log_(me.nama, id, nama, changes.join('; '));
+    }
     SpreadsheetApp.flush();
     return { ok: true, changes: changes.length };
   } finally {
@@ -184,122 +259,94 @@ function saveRow(token, row, payload) {
 
 /* ================= Foto ================= */
 
-function uploadPhoto(token, row, kegiatan, dataUrl, ket) {
+function uploadPhoto(token, id, kegiatan, dataUrl, ket) {
   const me = session_(token);
   if (me.peran === 'ATASAN') throw new Error('Akun atasan hanya bisa melihat.');
-  const sh = sheet_(CONFIG.TAB_DATA);
-  const cur = sh.getRange(Number(row), 1, 1, 20).getDisplayValues()[0];
-  if (String(cur[COL.KEGIATAN - 1]).trim() !== String(kegiatan || '').trim()) throw new Error('BARIS_BERUBAH');
-  if (me.peran !== 'OPERATOR' && !sameName_(cur[COL.PENGAWAS - 1], me.nama) && !sameName_(cur[COL.PERENCANA - 1], me.nama)) throw new Error('Kegiatan ini bukan tanggung jawab Anda.');
+  const kg = sheet_(CONFIG.TAB.KEGIATAN);
+  const r = findRow_(kg, id);
+  if (!r) throw new Error('Kegiatan ' + id + ' tidak ditemukan.');
+  const cur = kg.getRange(r, 1, 1, K_COLS).getValues()[0];
+  if (str_(cur[K.NAMA - 1]) !== str_(kegiatan)) throw new Error('BARIS_BERUBAH');
+  if (me.peran !== 'OPERATOR' && !sameName_(cur[K.PENGAWAS - 1], me.nama) && !sameName_(cur[K.PERENCANA - 1], me.nama)) {
+    throw new Error('Kegiatan ini bukan tanggung jawab Anda.');
+  }
   const m = String(dataUrl || '').match(/^data:(image\/(jpeg|png|webp));base64,(.+)$/);
   if (!m) throw new Error('Format foto tidak didukung. Pakai JPG atau PNG.');
   const bytes = Utilities.base64Decode(m[3]);
   if (bytes.length > 8 * 1024 * 1024) throw new Error('Foto terlalu besar (maks 8 MB).');
-  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd-HHmmss');
-  const blob = Utilities.newBlob(bytes, m[1], stamp + '-' + safe_(kegiatan).slice(0, 40) + '.' + (m[2] === 'jpeg' ? 'jpg' : m[2]));
-  const folder = subFolder_(kegiatan);
-  const file = folder.createFile(blob);
+  const stamp = Utilities.formatDate(new Date(), tz_(), 'yyyyMMdd-HHmmss');
+  const blob = Utilities.newBlob(bytes, m[1], id + '-' + stamp + '.' + (m[2] === 'jpeg' ? 'jpg' : m[2]));
+  const file = subFolder_(id, kegiatan).createFile(blob);
   file.setDescription((ket || '') + ' — oleh ' + me.nama);
-  // Supaya foto bisa tampil di web app untuk semua pengguna yang login.
+  // Supaya foto bisa tampil di aplikasi untuk semua pengguna yang login.
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  const fs = sheet_(CONFIG.TAB_FOTO);
-  fs.appendRow([new Date(), Number(row), kegiatan, String(ket || ''), file.getId(), me.nama]);
-  log_(me.nama, row, kegiatan, 'Unggah foto' + (ket ? ': ' + ket : ''));
+  const url = 'https://drive.google.com/file/d/' + file.getId() + '/view';
+  sheet_(CONFIG.TAB.FOTO).appendRow([new Date(), id, str_(kegiatan), str_(ket), file.getId(), url, me.nama]);
+  log_(me.nama, id, kegiatan, 'Unggah foto' + (ket ? ': ' + ket : ''));
   return { id: file.getId() };
-}
-
-function readFoto_() {
-  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.TAB_FOTO);
-  if (!sh || sh.getLastRow() < 2) return [];
-  return sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues()
-    .filter(r => r[4])
-    .map(r => ({ at: r[0] instanceof Date ? r[0].toISOString() : String(r[0]), row: Number(r[1]), kegiatan: String(r[2]), ket: String(r[3]), id: String(r[4]), by: String(r[5]) }))
-    .reverse();
 }
 
 /* ================= Setup (jalankan sekali) ================= */
 
-/**
- * Membuat tab Pengguna, Foto, Log dan folder foto.
- * Nama PIC diambil otomatis dari kolom PIC pengawas & PIC perencana, masing-masing diberi PIN acak.
- */
+/** Memeriksa tab database dan membuat folder foto di Google Drive. */
 function setup() {
   const ss = SpreadsheetApp.getActive();
-  let us = ss.getSheetByName(CONFIG.TAB_USER);
-  if (!us) {
-    us = ss.insertSheet(CONFIG.TAB_USER);
-    us.getRange(1, 1, 1, 5).setValues([['Nama', 'Peran', 'PIN', 'Aktif', 'Catatan']]).setFontWeight('bold');
-    us.getRange('C:C').setNumberFormat('@');
-    const data = sheet_(CONFIG.TAB_DATA).getDataRange().getDisplayValues();
-    const seen = {};
-    const rows = [['Operator', 'OPERATOR', pin_(), 'YA', 'Ganti nama sesuai operator'], ['Atasan', 'ATASAN', pin_(), 'YA', 'Untuk melihat laporan']];
-    data.slice(2).forEach(r => {
-      [[r[COL.PENGAWAS - 1], 'pengawas'], [r[COL.PERENCANA - 1], 'perencana']].forEach(([n, as]) => {
-        n = String(n || '').trim();
-        if (!n || n === '-' || /^OP\s*\d/i.test(n)) return;
-        const k = n.toLowerCase();
-        if (seen[k]) { if (seen[k].indexOf(as) < 0) seen[k].push(as); return; }
-        seen[k] = [as];
-        rows.push([n, 'PIC', pin_(), 'YA', seen[k]]);
-      });
-    });
-    rows.forEach(r => { if (Array.isArray(r[4])) r[4] = 'PIC ' + r[4].join(' & '); });
-    us.getRange(2, 1, rows.length, 5).setValues(rows);
-    const rule = SpreadsheetApp.newDataValidation().requireValueInList(ROLES, true).build();
-    us.getRange(2, 2, 200, 1).setDataValidation(rule);
-    us.getRange(2, 4, 200, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['YA', 'TIDAK'], true).build());
-    us.setFrozenRows(1); us.autoResizeColumns(1, 5);
-  }
-  if (!ss.getSheetByName(CONFIG.TAB_FOTO)) {
-    const f = ss.insertSheet(CONFIG.TAB_FOTO);
-    f.getRange(1, 1, 1, 6).setValues([['Waktu', 'Baris', 'Kegiatan', 'Keterangan', 'File ID', 'Oleh']]).setFontWeight('bold'); f.setFrozenRows(1);
-  }
-  if (!ss.getSheetByName(CONFIG.TAB_LOG)) {
-    const l = ss.insertSheet(CONFIG.TAB_LOG);
-    l.getRange(1, 1, 1, 5).setValues([['Waktu', 'Oleh', 'Baris', 'Kegiatan', 'Perubahan']]).setFontWeight('bold'); l.setFrozenRows(1);
-  }
-  rootFolder_();
-  SpreadsheetApp.getUi && SpreadsheetApp.getActive().toast('Setup selesai. Cek tab "Pengguna" untuk daftar PIN.', 'Monitoring OP 2', 8);
+  const hilang = Object.values(CONFIG.TAB).filter(t => !ss.getSheetByName(t));
+  if (hilang.length) throw new Error('Tab berikut tidak ditemukan: ' + hilang.join(', ') + '. Pastikan script dipasang di spreadsheet Database Monitoring OP 2.');
+  const folder = rootFolder_();
+  const n = readUsers_().length;
+  ss.toast('Database siap. ' + n + ' pengguna aktif. Folder foto: ' + folder.getName(), 'Monitoring OP 2', 8);
+  return 'OK';
 }
 
 /* ================= Bantuan ================= */
 
 function sheet_(name) {
   const sh = SpreadsheetApp.getActive().getSheetByName(name);
-  if (!sh) throw new Error('Tab "' + name + '" tidak ditemukan. Jalankan setup() dulu.');
+  if (!sh) throw new Error('Tab "' + name + '" tidak ditemukan.');
   return sh;
 }
+function findRow_(sh, id) {
+  id = str_(id);
+  if (!id || sh.getLastRow() < 2) return 0;
+  const ids = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) if (str_(ids[i][0]) === id) return i + 2;
+  return 0;
+}
 function readUsers_() {
-  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.TAB_USER);
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.TAB.PENGGUNA);
   if (!sh || sh.getLastRow() < 2) return [];
   return sh.getRange(2, 1, sh.getLastRow() - 1, 4).getDisplayValues()
-    .map(r => ({ nama: String(r[0]).trim(), peran: String(r[1]).trim().toUpperCase(), pin: String(r[2]).trim(), aktif: String(r[3]).trim().toUpperCase() !== 'TIDAK' }))
+    .map(r => ({ nama: str_(r[0]), peran: str_(r[1]).toUpperCase(), pin: str_(r[2]), aktif: str_(r[3]).toUpperCase() !== 'TIDAK' }))
     .filter(u => u.nama && ROLES.indexOf(u.peran) >= 0 && u.pin);
 }
-function log_(oleh, row, kegiatan, isi) {
-  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.TAB_LOG);
-  if (sh) sh.appendRow([new Date(), oleh, row, kegiatan, isi]);
+function log_(oleh, id, kegiatan, isi) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.TAB.LOG);
+  if (sh) sh.appendRow([new Date(), oleh, id, kegiatan, isi]);
 }
-function num_(s) {
-  let t = String(s == null ? '' : s).trim();
-  if (t === '' || t === '-') return null;
-  if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, ''); else if (/^\d+,\d+$/.test(t)) t = t.replace(',', '.');
-  const n = Number(t); return isFinite(n) ? n : null;
+function str_(v) { return v == null ? '' : String(v).trim(); }
+/** Nilai persen di sheet disimpan sebagai pecahan (0,85); aplikasi memakai 0–100. */
+function pct_(v) {
+  if (v === '' || v == null) return null;
+  const n = typeof v === 'number' ? v : Number(String(v).replace('%', '').replace(',', '.'));
+  if (!isFinite(n)) return null;
+  return typeof v === 'number' ? Math.round(n * 10000) / 100 : n;
 }
-function sameName_(a, b) { return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase(); }
-function pin_() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function fmtPct_(n) { return (Math.round(n * 10) / 10) + '%'; }
+function iso_(d) { return Utilities.formatDate(d, tz_(), 'yyyy-MM-dd'); }
+function tz_() { return SpreadsheetApp.getActive().getSpreadsheetTimeZone() || Session.getScriptTimeZone(); }
+function sameName_(a, b) { return str_(a).toLowerCase() === str_(b).toLowerCase(); }
 function safe_(s) { return String(s || '').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim(); }
-function bulan_(m) { return ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'][m]; }
 function rootFolder_() {
   const props = PropertiesService.getScriptProperties();
-  const id = props.getProperty('FOLDER_ID');
-  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
+  const fid = props.getProperty('FOLDER_ID');
+  if (fid) { try { return DriveApp.getFolderById(fid); } catch (e) {} }
   const f = DriveApp.createFolder(CONFIG.FOLDER_FOTO);
   props.setProperty('FOLDER_ID', f.getId());
   return f;
 }
-function subFolder_(kegiatan) {
-  const root = rootFolder_(), name = safe_(kegiatan).slice(0, 90) || 'Lainnya';
+function subFolder_(id, kegiatan) {
+  const root = rootFolder_(), name = (id + ' ' + safe_(kegiatan)).slice(0, 100);
   const it = root.getFoldersByName(name);
   return it.hasNext() ? it.next() : root.createFolder(name);
 }
