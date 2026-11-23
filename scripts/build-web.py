@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parent.parent
 src = (root / 'apps-script' / 'Index.html').read_text(encoding='utf-8')
 head_extra = (
     '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
-    '<meta name="theme-color" content="#0B5E45">\n'
+    '<meta name="theme-color" content="#1F2F5F">\n'
     '<link rel="manifest" href="/manifest.webmanifest">\n'
     '<link rel="icon" type="image/png" href="/icons/icon-192.png">\n'
     '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">\n'
